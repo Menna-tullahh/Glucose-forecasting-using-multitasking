@@ -76,7 +76,7 @@ def normalize_data(df):
     scaler = StandardScaler()
     # scaler = MinMaxScaler(feature_range=(-1, 1))
     df[df.columns] = scaler.fit_transform(df)  # Normalize all columns
-    print('Min value:',df['value'].min())
+    # print('Min value:',df['value'].min())
     return df, scaler
 
 def fill_na(df):
@@ -89,7 +89,7 @@ def fill_na(df):
     Returns:
     pd.DataFrame: DataFrame with missing values filled.
     """
-    df.fillna(-2.5, inplace=True)
+    df.fillna(0, inplace=True)
     return df
 
 def imputation(df):
@@ -206,6 +206,81 @@ def process_all_csv_files(input_folder, output_folder, timestamp_col='ts', freq=
     except Exception as e:
         logging.error(f"Error processing CSV files in {input_folder}: {e}")
         return 0
+    
+def process_all_csv_files_personalized(input_folder, output_folder, timestamp_col='ts', freq='5 min', agg_func='mean'):
+    """
+    Processes all CSV files in the specified input folder, applies preprocessing, and saves the processed files to the output folder.
+
+    Parameters:
+    input_folder (str): The folder containing the CSV files to process.
+    output_folder (str): The folder where processed CSV files will be saved.
+    timestamp_col (str): The name of the column containing the timestamps. Default is 'ts'.
+    freq (str): The resampling frequency. Default is '5T' (5 minutes).
+    agg_func (str): The aggregation function to apply during resampling. Default is 'mean'.
+
+    Returns:
+    int: Status code, 1 for success.
+    """
+    try:
+        if not os.path.exists(input_folder):
+            raise FileNotFoundError(f"The folder {input_folder} does not exist.")
+        
+        if os.path.exists(output_folder):
+            shutil.rmtree(output_folder)
+            # raise FileNotFoundError(f"The folder {output_folder} already exists.")
+        train_patients = {}
+        test_patients = {}
+        # Traverse through all folders and files in the input directory
+        for top, _, files in os.walk(input_folder):
+            if files:
+                sub_path = os.path.relpath(top, input_folder)
+                full_save_folder_path = os.path.join(output_folder, sub_path)
+                logging.info(f"Processing folder {top}, saving to {full_save_folder_path}")
+
+                # Create output directories if they don't exist
+                os.makedirs(full_save_folder_path, exist_ok=True)
+
+                csv_files = [file for file in os.listdir(top) if file.endswith(".csv")]
+                if not csv_files:
+                    logging.warning(f"No CSV files found in {top}.")
+                    continue
+
+                for file in csv_files:
+                    patient_code = file[:3]
+                    # print(patient_code)
+                    file_path = os.path.join(top, file)
+
+                    df = pd.read_csv(file_path)
+                    # print(sub_path.split("\\")[1])
+                    
+                    # Skip empty CSV files
+                    if df.empty:
+                        logging.warning(f"The file {file} is empty and was skipped.")
+                        continue
+                    
+                    logging.info(f"Processing file {file}...")
+
+                    # Apply preprocessing
+                    try:
+                        processed_df, scaler= preprocessing_df(df, timestamp_col=timestamp_col, freq=freq, agg_func=agg_func)
+                        if sub_path.split("\\")[1] == "train":
+                            train_patients[patient_code] =  processed_df
+                        else:
+                            test_patients[patient_code] =  processed_df
+                        # Save the processed DataFrame
+                        output_file_path = os.path.join(full_save_folder_path, file)
+                        processed_df.to_csv(output_file_path, index=True)  # Ensure index is saved
+                        logging.info(f"Processed and saved {file} to {output_file_path}.")
+                        
+                    except Exception as e:
+                        logging.error(f"Error processing file {file}: {e}")
+        
+        return scaler, train_patients, test_patients
+    except Exception as e:
+        logging.error(f"Error processing CSV files in {input_folder}: {e}")
+        return 0
+    
+    
 
 if __name__ == "__main__":
     input_folder = 'data/ohio-data/processed'

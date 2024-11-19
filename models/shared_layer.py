@@ -97,9 +97,9 @@ logger = logging.getLogger()
 #         # output = torch.sigmoid(output)
 #         return output
 
-class PersonalizedLSTMModel(nn.Module):
+class SharedLayerModel(nn.Module):
     def __init__(self, input_shape, output_shape):
-        super(PersonalizedLSTMModel, self).__init__()
+        super(SharedLayerModel, self).__init__()
 
                 # CNN Layer before LSTM
         self.conv_layers = nn.ModuleList([
@@ -127,7 +127,7 @@ class PersonalizedLSTMModel(nn.Module):
         Returns:
         - masked_x: The input tensor where masked values are set to zero.
         """
-        mask = (x != -2.5).float()  # Create a mask where 1 indicates valid data
+        mask = (x != 0.0).float()  # Create a mask where 1 indicates valid data
         masked_x = x * mask  # Apply the mask by zeroing out the masked values
         return masked_x, mask
     
@@ -161,6 +161,80 @@ class PersonalizedLSTMModel(nn.Module):
         # Output layer
         output = self.output_layer(merged_personalized_output)
         # output = torch.sigmoid(output)
+        return output
+    
+class SharedLayerModelWithAttention(nn.Module):
+    def __init__(self, input_shape, output_shape):
+        super(SharedLayerModelWithAttention, self).__init__()
+
+        # CNN Layer before LSTM
+        self.conv_layers = nn.ModuleList([
+            nn.Conv1d(in_channels=input_shape[-1], out_channels=64, kernel_size=4, stride=2, padding=1, dilation=2)
+            for _ in range(output_shape[0])
+        ])
+
+        # Shared LSTM layer
+        self.shared_lstm = nn.GRU(input_size=64, hidden_size=128, batch_first=True)
+
+        # Personalized fully connected layers
+        self.personalized_fc = nn.ModuleList([
+            nn.Linear(128, 64) for _ in range(output_shape[0])
+        ])
+        self.dropout = nn.Dropout(0.2)
+
+        # Task-specific attention layers
+        self.task_specific_attention = nn.ModuleList([
+            nn.Linear(64, 1) for _ in range(output_shape[0])
+        ])
+
+        # Output layer
+        self.output_layer = nn.Linear(64 * output_shape[0], output_shape[0])
+
+    def apply_mask(self, x):
+        """
+        Apply masking to the input tensor by replacing masked values with zeros.
+        Parameters:
+        - x: Input tensor of shape (batch_size, sequence_length, features)
+        Returns:
+        - masked_x: The input tensor where masked values are set to zero.
+        """
+        mask = (x != 0.0).float()  # Create a mask where 1 indicates valid data
+        masked_x = x * mask  # Apply the mask by zeroing out the masked values
+        return masked_x, mask
+
+    def forward(self, x):
+        shared_outputs = []
+
+        # Process each task's input through the CNN and LSTM
+        for i in range(len(x)):
+            masked_input, mask = self.apply_mask(x[i])
+
+            # Convolutional layer
+            conv_out = self.conv_layers[i](masked_input.transpose(1, 2))
+            lstm_input = conv_out.transpose(1, 2)
+
+            # Shared LSTM layer
+            lstm_out, _ = self.shared_lstm(lstm_input)
+
+            # Take the last hidden state of the LSTM
+            shared_outputs.append(lstm_out[:, -1, :])
+
+        # Personalized dense layers with task-specific attention
+        personalized_outputs = []
+        for i, shared_out in enumerate(shared_outputs):
+            personal_out = F.relu(self.personalized_fc[i](shared_out))
+            personal_out = self.dropout(personal_out)
+
+            # Apply task-specific attention
+            attention_scores = F.softmax(self.task_specific_attention[i](personal_out), dim=1)  # Shape: (batch_size, 1)
+            personalized_context = attention_scores * personal_out  # Weighted features
+            personalized_outputs.append(personalized_context)
+
+        # Concatenate task-specific outputs
+        merged_personalized_output = torch.cat(personalized_outputs, dim=1)
+
+        # Final output layer
+        output = self.output_layer(merged_personalized_output)
         return output
 
 # class PersonalizedLSTMModel(nn.Module):
@@ -268,48 +342,62 @@ class PersonalizedLSTMModel(nn.Module):
         
 #         return output
 
+import torch.optim as optim
+import torch
+from tqdm import tqdm
+import numpy as np
 
-def validate_model(model, val_loader, criterion, second_criterion, device):
+def validate_model(model, val_loader, criterion_mae, criterion_mse, device, model_type):
     """
-    Validate the LSTM model on the validation set.
+    Validate the model on the validation set.
 
     Parameters:
     - model: The model to validate.
     - val_loader: DataLoader for validation data.
-    - criterion: Loss function to evaluate performance.
+    - criterion_mae: Mean Absolute Error loss function.
+    - criterion_mse: Mean Squared Error loss function.
     - device: Device to perform computations on (CPU or GPU).
 
     Returns:
-    - avg_val_loss: The average validation loss over the validation dataset.
+    - avg_val_mae: The average validation MAE loss.
+    - avg_val_rmse: The average validation RMSE loss.
     """
-    model.eval()  # Set model to evaluation mode (disables dropout, etc.)
-    running_val_loss = 0.0
-
-    running_val_loss2 = 0.0
+    model.eval()  # Set model to evaluation mode
+    running_mae_loss = 0.0
+    running_mse_loss = 0.0
+    num_batches = len(val_loader)
     
-    with torch.no_grad():  # Disable gradient calculations during validation
+    with torch.no_grad():  # Disable gradient calculation during validation
         for inputs, targets in val_loader:
+            if model_type == "generalized":
+                # print("generalized")
+                inputs = [inp for inp in inputs]
+                inputs = torch.tensor(np.array(inputs)).to(device)
+                targets = targets.to(device)
+            
+                # Forward pass
+                outputs = model(inputs)
+            else:
             # Move data to the appropriate device (GPU or CPU)
-            inputs = [inp.to(device) for inp in inputs]
-            targets = targets.to(device)
+                inputs = [inp.to(device) for inp in inputs]
+                targets = targets.to(device)
+                
+                # Forward pass
+                outputs = model(inputs)
+                
+            # Calculate MAE and MSE loss
+            mae_loss = criterion_mae(outputs, targets)
+            mse_loss = criterion_mse(outputs, targets)
             
-            # Forward pass
-            outputs = model(inputs)
-            
-            # Calculate loss
-            loss = criterion(outputs, targets)
-            running_val_loss += loss.item()
+            running_mae_loss += mae_loss.item()
+            running_mse_loss += mse_loss.item()
 
-            loss2 = second_criterion(outputs, targets)
-            running_val_loss2 += loss2.item()
-    
-    avg_val_loss = running_val_loss / len(val_loader)
-    avg_val_loss_2 = running_val_loss2 / len(val_loader)
+    avg_val_mae = running_mae_loss / num_batches
+    avg_val_rmse = np.sqrt(running_mse_loss / num_batches)  # RMSE is sqrt of MSE
 
-    return avg_val_loss, avg_val_loss_2
+    return avg_val_mae, avg_val_rmse
 
-
-def train_model(model, train_loader, val_loader, epochs, learning_rate):
+def train_model(model, train_loader, val_loader, epochs, learning_rate, model_type):
     """
     Train the LSTM model using a custom training loop with tqdm progress bars.
     Also evaluates the model on validation data after each epoch.
@@ -324,98 +412,321 @@ def train_model(model, train_loader, val_loader, epochs, learning_rate):
     - learning_rate: Learning rate for optimizer.
     
     Returns:
-    - model: The trained model.
+    - history: Dictionary containing the training and validation MAE and RMSE for each epoch.
     """
-    # Define the optimizer and the loss function
+    # Define the optimizer and the loss functions (MAE and MSE)
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-    # criterion = nn.HuberLoss()  # huber Error
-    criterion = nn.L1Loss()  # Mean Absolute Error
-    criterion2 = nn.MSELoss()  # Mean Absolute Error
+    criterion_mae = torch.nn.L1Loss()  # Mean Absolute Error
+    criterion_mse = torch.nn.MSELoss()  # Mean Squared Error (for RMSE calculation)
 
     # Move model to GPU if available
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = model.to(device)
     
+    # Initialize lists to store the history of losses
+    history = {
+        'train_mae': [],
+        'train_rmse': [],
+        'val_mae': [],
+        'val_rmse': []
+    }
+
     logger.info(f"Starting training for {epochs} epochs with learning rate {learning_rate}.")
 
     # Training loop
     for epoch in range(epochs):
         model.train()  # Set model to training mode
-        running_loss = 0.0
+        running_mae_loss = 0.0
+        running_mse_loss = 0.0
+        num_batches = len(train_loader)
 
         # Add tqdm progress bar for each epoch
-        with tqdm(total=len(train_loader), desc=f'Epoch {epoch + 1}/{epochs}', unit='batch') as pbar:
+        with tqdm(total=num_batches, desc=f'Epoch {epoch + 1}/{epochs}', unit='batch') as pbar:
             for batch_idx, (inputs, targets) in enumerate(train_loader):
                 # Move data to device (GPU or CPU)
-                inputs = [inp.to(device) for inp in inputs]  # List of tensors, one for each input branch
-                targets = targets.to(device)
+                if model_type == "generalized":
+                    # print("generalized")
+                    inputs = [inp for inp in inputs]
+                    inputs = torch.tensor(np.array(inputs)).to(device)
+                    targets = targets.to(device)
+
+                    optimizer.zero_grad()
                 
-                # Zero the parameter gradients
-                optimizer.zero_grad()
+                    # Forward pass
+                    outputs = model(inputs)
+                elif model_type == "shared-layer":
+                    inputs = [inp.to(device) for inp in inputs]
+                    targets = targets.to(device)
+                    # Zero the parameter gradients
+                    optimizer.zero_grad()
+            
+                    # Forward pass
+                    outputs = model(inputs)
+
+                else:
+                    # print(inputs)
+                    # print("Not")
+                    inputs = [inp.to(device) for inp in inputs]
+                    # inputs = torch.tensor(np.array(inputs)).to(device)
+                    targets = targets.to(device)
+                    # Zero the parameter gradients
+                    optimizer.zero_grad()
+            
+                    # Forward pass
+                    outputs = model(inputs)
                 
-                # Forward pass
-                outputs = model(inputs)
-                
-                # Compute loss
-                loss = criterion(outputs, targets)
+                # Compute losses
+                mae_loss = criterion_mae(outputs, targets)
+                mse_loss = criterion_mse(outputs, targets)
                 
                 # Backward pass and optimization
-                loss.backward()
+                mae_loss.backward()  
                 optimizer.step()
                 
-                running_loss += loss.item()
+                running_mae_loss += mae_loss.item()
+                running_mse_loss += mse_loss.item()
 
                 # Update progress bar
-                pbar.set_postfix(loss=loss.item())
+                pbar.set_postfix(mae_loss=mae_loss.item())
                 pbar.update(1)
         
-        avg_loss = running_loss / len(train_loader)
-        logger.info(f"Epoch [{epoch + 1}/{epochs}], Training Loss: {avg_loss:.4f}")
+        # Calculate average training loss for the epoch
+        avg_train_mae = running_mae_loss / num_batches
+        avg_train_rmse = np.sqrt(running_mse_loss / num_batches)
+        history['train_mae'].append(avg_train_mae)
+        history['train_rmse'].append(avg_train_rmse)
+        # Log training loss
+        
+        print(f"Epoch [{epoch + 1}/{epochs}], Training MAE: {avg_train_mae:.4f}, Training RMSE: {avg_train_rmse:.4f}")
 
-        # Validate the model after each epoch
-        avg_val_loss, avg_val_loss2 = validate_model(model, val_loader, criterion, criterion2, device)
-        logger.info(f"Epoch [{epoch + 1}/{epochs}], Validation MAE: {avg_val_loss:.4f}, Validation RMSE: {np.sqrt(avg_val_loss2):.4f}")
-        print(f"Epoch [{epoch + 1}/{epochs}], Validation MAE: {avg_val_loss:.4f}, Validation RMSE: {np.sqrt(avg_val_loss2):.4f}")
-    
-    # return model  # Return the trained model
+        logger.info(f"Epoch [{epoch + 1}/{epochs}], Training MAE: {avg_train_mae:.4f}, Training RMSE: {avg_train_rmse:.4f}")
 
-def evaluate_test_data(model, test_loader):
-    """
-    Evaluate the model on the test data and calculate RMSE.
-    
-    Parameters:
-    - model: The trained model to evaluate.
-    - test_loader: DataLoader for the test data.
-    
-    Returns:
-    - rmse: The calculated Root Mean Squared Error (RMSE) on the test data.
-    """
-    model.eval()  # Set the model to evaluation mode
-    criterion = nn.MSELoss()  # We use MSELoss and take the square root for RMSE
-    running_test_loss = 0.0
-    
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = model.to(device)
-    
+        if val_loader != None:
+            # Validate the model after each epoch
+            avg_val_mae, avg_val_rmse = validate_model(model, val_loader, criterion_mae, criterion_mse, device,model_type)
+            
+            # Log validation loss
+            logger.info(f"Epoch [{epoch + 1}/{epochs}], Validation MAE: {avg_val_mae:.4f}, Validation RMSE: {avg_val_rmse:.4f}")
+            
+            # Print validation loss
+            print(f"Epoch [{epoch + 1}/{epochs}], Validation MAE: {avg_val_mae:.4f}, Validation RMSE: {avg_val_rmse:.4f}")
+            
+            # Store the losses in history
+
+            history['val_mae'].append(avg_val_mae)
+            history['val_rmse'].append(avg_val_rmse)
+
+    # Return the model and the history of losses
+    return model, history
+
+# def evaluate_test(model,test_loader, device ,scaler, mask_value, model_type):
+#     with torch.no_grad():  # Disable gradient calculation for evaluation
+#         for inputs, targets in test_loader:
+#             # Move data to device (GPU or CPU)
+
+#             if model_type == "personalized":
+#                 inputs = [inp.to(device) for inp in inputs]
+#                 targets = targets.to(device)
+#                 # print(targets[0])
+#                 # print(targets)
+#                 # Forward pass
+#                 outputs = model(inputs)
+#                 # print([[outputs[0]]])
+#                 # # # Convert to numpy arrays for masking
+#                 outputs_np = outputs.cpu().numpy()
+#                 targets_np = targets.cpu().numpy()
+#                 abs_patients_errors =  []
+#                 squared_patients_errors = []
+
+#                 # for i in range(len(targets_np)): #this prints a list of 12 values of each patient
+#                 for j in range(len(targets_np)):
+#                     if targets[j] != mask_value:
+#                         sub_output = scaler.inverse_transform([outputs_np[j]])[0][0]
+#                         sub_target = scaler.inverse_transform([targets_np[j]])[0][0]
+#                         abs_patients_errors.append(abs(sub_output-sub_target))
+#                         squared_patients_errors.append((sub_output-sub_target) ** 2)
+#                 mae = np.mean(abs_patients_errors)
+#                 rmse = np.sqrt(np.mean(squared_patients_errors))
+#                 each_patient_mae, each_patient_rmse = None, None
+#             elif model_type == "shared-layer" or model_type == "generalized":
+#                 inputs = [inp for inp in inputs]
+#                 inputs = torch.tensor(np.array(inputs)).to(device)
+#                 targets = targets.to(device)
+#                 # print(targets[0])
+#                 # print(targets)
+#                 # Forward pass
+#                 outputs = model(inputs)
+#                 # print([[outputs[0]]])
+#                 # # # Convert to numpy arrays for masking
+#                 outputs_np = outputs.cpu().numpy()
+#                 targets_np = targets.cpu().numpy()
+
+#                 abs_patients_errors =  {key: [] for key in range(13)}
+#                 squared_patients_errors =  {key: [] for key in range(13)}
+#                 for i in range(len(targets_np)): #this prints a list of 12 values of each patient
+#                     for j in range(len(targets_np[i])):
+#                         if targets[i][j] != mask_value:
+#                             sub_output = scaler.inverse_transform([[outputs_np[i][j]]])[0][0]
+#                             sub_target = scaler.inverse_transform([[targets_np[i][j]]])[0][0]
+#                             abs_patients_errors[j].append(abs(sub_output-sub_target))
+#                             squared_patients_errors[j].append((sub_output-sub_target) ** 2)
+#                 each_patient_mae = []
+#                 each_patient_rmse = []
+#                 for i in range(len(squared_patients_errors)-1):
+#                     mae = np.mean(abs_patients_errors[i])
+#                     rmse = np.sqrt(np.mean(squared_patients_errors[i]))
+#                     each_patient_mae.append(mae)
+#                     each_patient_rmse.append(rmse)
+#                 mae = np.mean(each_patient_mae)
+#                 rmse = np.mean(each_patient_rmse)
+
+
+#                     # print(f"{patients_list[i]}: RMSE: {rmse}, MAE: {mae}")
+#                 # mae, rmse = abs_patients_errors, squared_patients_errors
+
+#     return mae, rmse, each_patient_mae, each_patient_rmse
+
+
+# def model_prediction(model,test_loader, device, model_type):
+#     with torch.no_grad():  # Disable gradient calculation for evaluation
+#         outputs_all_batches = []
+#         targets_all_batches = []
+
+#         for inputs, targets in test_loader:
+#             # Move data to device (GPU or CPU)
+#             if model_type == "personalized":
+#                 inputs = [inp.to(device) for inp in inputs]
+
+#             elif model_type == "shared-layer" or model_type == "generalized":
+#                 inputs = [inp for inp in inputs]
+#                 inputs = torch.tensor(np.array(inputs)).to(device)
+
+#             targets = targets.to(device)
+#             outputs = model(inputs)
+#             targets_all_batches.append(targets)
+#             outputs_all_batches.append(outputs)
+#     return outputs_all_batches, targets_all_batches
+
+def model_prediction(model,test_loader, device, model_type):
     with torch.no_grad():  # Disable gradient calculation for evaluation
-        for inputs, targets in test_loader:
-            # Move data to device (GPU or CPU)
-            inputs = [inp.to(device) for inp in inputs]
-            targets = targets.to(device)
-            
-            # Forward pass
-            outputs = model(inputs)
-            
-            # Compute MSE loss
-            loss = criterion(outputs, targets)
-            running_test_loss += loss.item()
+        outputs_all_batches = []
+        targets_all_batches = []
+        
+        # outputs_all_batches =  {key: [] for key in range(12)}
+        # targets_all_batches =  {key: [] for key in range(12)}
+        if model_type == "personalized":
+            for inputs, targets in test_loader:
+                # Move data to device (GPU or CPU)
+                
+                inputs = [inp.to(device) for inp in inputs]
+                targets = targets.to(device)
+                outputs = model(inputs)
+                
+                targets = targets.to(device)
+                outputs = model(inputs)
+                targets_all_batches.append(targets)
+                outputs_all_batches.append(outputs)
+
+        elif model_type == "shared-layer" or model_type == "generalized":
+            for inputs, targets in test_loader:
+
+                inputs = [inp for inp in inputs]
+                inputs = torch.tensor(np.array(inputs)).to(device)
+
+                targets = targets.to(device)
+                outputs = model(inputs)
+                targets_all_batches.append(targets)
+                outputs_all_batches.append(outputs)
+
+    return outputs_all_batches, targets_all_batches
+                # print([[outputs[0]]])
+                # # # Convert to numpy arrays for masking
+                # outputs_np = outputs.cpu().numpy()
+                # targets_np = targets.cpu().numpy()
+                # abs_patients_errors =  []
+                # squared_patients_errors = []
+def evaluate_test(model,test_loader, device ,scaler, mask_value, model_type):
+    outputs_all_batches, targets_all_batches = model_prediction(model,test_loader, device, model_type)
+
+    if model_type == "personalized":
+        abs_patients_errors =  []
+        squared_patients_errors = []
+        for one_batch in range(len(outputs_all_batches)):
+            outputs_np = outputs_all_batches[one_batch].cpu().numpy()
+            targets_np = targets_all_batches[one_batch].cpu().numpy()
+
+
+            for j in range(len(targets_np)):
+                    if targets_np[j] != mask_value:
+                        sub_output = scaler.inverse_transform([outputs_np[j]])[0][0]
+                        sub_target = scaler.inverse_transform([targets_np[j]])[0][0]
+                        abs_patients_errors.append(abs(sub_output-sub_target))
+                        squared_patients_errors.append((sub_output-sub_target) ** 2)
+        mae = np.mean(abs_patients_errors)
+        rmse = np.sqrt(np.mean(squared_patients_errors))
+        return mae, rmse
     
-    # Calculate the average MSE over all batches and take the square root for RMSE
-    avg_mse = running_test_loss / len(test_loader)
-    rmse = np.sqrt(avg_mse)
+    elif model_type == "shared-layer" or model_type == "generalized":
+        abs_patients_errors =  {key: [] for key in range(12)}
+        squared_patients_errors =  {key: [] for key in range(12)}
+        for one_batch in range(len(outputs_all_batches)):
+            outputs_np = outputs_all_batches[one_batch].cpu().numpy()
+            targets_np = targets_all_batches[one_batch].cpu().numpy()
+            for i in range(len(targets_np)): #this prints a list of 12 values of each patient
+                for j in range(len(targets_np[i])):
+                    if targets_np[i][j] != mask_value:
+                        sub_output = scaler.inverse_transform([[outputs_np[i][j]]])[0][0]
+                        sub_target = scaler.inverse_transform([[targets_np[i][j]]])[0][0]
+                        # print(sub_output)
+                        # print(sub_target)
+                        # print(sub_output)
+                        # print(sub_target)
+                        abs_patients_errors[j].append(abs(sub_output-sub_target))
+                        squared_patients_errors[j].append((sub_output-sub_target) ** 2)
+                        # print(abs_patients_errors)
+        for patient in range(len(squared_patients_errors)):
+            abs_patients_errors[patient] = np.mean(abs_patients_errors[patient])
+            squared_patients_errors[patient] = np.sqrt(np.mean(squared_patients_errors[patient]))
+        return abs_patients_errors, squared_patients_errors
+
+
+# def evaluate_test_data(model, test_loader):
+#     """
+#     Evaluate the model on the test data and calculate RMSE.
     
-    print(f"Test RMSE: {rmse:.4f}")
-    return rmse
+#     Parameters:
+#     - model: The trained model to evaluate.
+#     - test_loader: DataLoader for the test data.
+    
+#     Returns:
+#     - rmse: The calculated Root Mean Squared Error (RMSE) on the test data.
+#     """
+#     model.eval()  # Set the model to evaluation mode
+#     criterion = nn.MSELoss()  # We use MSELoss and take the square root for RMSE
+#     running_test_loss = 0.0
+    
+#     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+#     model = model.to(device)
+    
+#     with torch.no_grad():  # Disable gradient calculation for evaluation
+#         for inputs, targets in test_loader:
+#             # Move data to device (GPU or CPU)
+#             inputs = [inp.to(device) for inp in inputs]
+#             targets = targets.to(device)
+            
+#             # Forward pass
+#             outputs = model(inputs)
+            
+#             # Compute MSE loss
+#             loss = criterion(outputs, targets)
+#             running_test_loss += loss.item()
+    
+#     # Calculate the average MSE over all batches and take the square root for RMSE
+#     avg_mse = running_test_loss / len(test_loader)
+#     rmse = np.sqrt(avg_mse)
+    
+#     print(f"Test RMSE: {rmse:.4f}")
+#     return rmse
 
 class TimeSeriesDataset(torch.utils.data.Dataset):
     def __init__(self, inputs, targets):

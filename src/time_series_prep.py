@@ -2,6 +2,8 @@ import numpy as np
 import pandas as pd
 import os
 import logging
+import torch
+from models.shared_layer import *
 
 # Configure logging to save logs to a file and stream to console
 logging.basicConfig(
@@ -52,7 +54,7 @@ def prepare_time_series_data(df, target_col, window_size, prediction_horizon):
     # print(y.shape)
     return X, y
 
-def pad_sequences(sequences, max_len, pad_value=0):
+def pad_sequences(sequences, max_len, pad_value=0.0):
     """
     Pads a list of sequences to ensure they all have the same length.
 
@@ -147,3 +149,84 @@ def aggregate_patients(input_folder, target_col, window_size = 5, prediction_hor
     logging.info(f"Aggregated data from {len(csv_files)} files with a total of {len(all_X)} samples.")
 
     return all_X, all_y
+
+def sequential_split(dataset, train_ratio=0.8):
+    """
+    Splits the dataset into a sequential training and validation set based on the specified ratio.
+    
+    Parameters:
+    - dataset: A TimeSeriesDataset instance.
+    - train_ratio: The proportion of the dataset to include in the train split.
+    
+    Returns:
+    - train_dataset: The training subset.
+    - val_dataset: The validation subset.
+    """
+    total_samples = len(dataset)
+    train_size = int(train_ratio * total_samples)
+    val_size = total_samples - train_size
+    
+    # Assuming the dataset is already sorted chronologically
+    train_dataset = torch.utils.data.Subset(dataset, list(range(train_size)))
+    val_dataset = torch.utils.data.Subset(dataset, list(range(train_size, total_samples)))
+    
+    return train_dataset, val_dataset
+
+
+def prepare_data_loader(window_size,BATCH_SIZE, prediction_horizon, model_type, split_ratio = 0.8, df=None, df_test=None, output_folder_train = None, shuffle = True):
+
+    if model_type == 'personalized':
+
+        X, y = prepare_time_series_data(df, 'value', window_size, prediction_horizon)
+        X = X.reshape(1,X.shape[0], X.shape[1])
+        y = y.reshape(1,y.shape[0])
+        print("Shape of X (features):", X.shape)
+        print("Shape of y (targets):", y.shape)
+
+        X_test, y_test = prepare_time_series_data(df_test, 'value', window_size, prediction_horizon)
+        X_test = X_test.reshape(1,X_test.shape[0], X_test.shape[1])
+        # print(y.shape)
+        y_test = y_test.reshape(1,y_test.shape[0])
+        print("Shape of X_test (features):", X_test.shape)
+        print("Shape of y_test (targets):", y_test.shape)
+        input_shape = (window_size, X.shape[1], 1)
+        input_shape_test = (window_size, X_test.shape[1], 1)
+        output_shape, output_shape_test = (1,), (1,)
+
+
+    else:
+        X, y = aggregate_patients(output_folder_train, 'value', window_size, prediction_horizon, test = False)
+        print("Shape of X (features):", X.shape)
+        print("Shape of y (targets):", y.shape)
+
+        X_test, y_test = aggregate_patients(output_folder_train, 'value', window_size, prediction_horizon, test = True)
+        print("Shape of X_test (features):", X_test.shape)
+        print("Shape of y_test (targets):", y_test.shape)
+        if model_type == 'shared-layer':
+            input_shape = (window_size, X.shape[1], 1)
+            input_shape_test = (window_size, X_test.shape[1], 1)
+        elif model_type == 'generalized':
+            input_shape = (window_size, X.shape[1], 12)
+            input_shape_test = (window_size, X_test.shape[1], 12)
+        output_shape, output_shape_test = (12,), (12,)
+
+
+
+    dataset = TimeSeriesDataset(X, y)
+    train_dataset, val_dataset = sequential_split(dataset, train_ratio=split_ratio)
+
+        # Create a DataLoader for batching
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=shuffle)
+    validation_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=shuffle)
+
+    all_train_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=shuffle)
+
+
+    test_dataset = TimeSeriesDataset(X_test, y_test)
+    # Create a DataLoader for batching
+    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=shuffle)
+
+
+    return train_loader, validation_loader, all_train_loader, test_loader, input_shape, input_shape_test, output_shape, output_shape_test
+
+

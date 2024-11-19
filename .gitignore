@@ -6,3 +6,6 @@ notes.txt
 Ohio_dataset_Multitask learning_PH 1 hr_Offset Correction + Masking + Filling Nulls (Underfitting).ipynb
 train draft.ipynb
 __pycache__/
+generalized_lstm_model
+personalized_lstm_model.png
+training.log

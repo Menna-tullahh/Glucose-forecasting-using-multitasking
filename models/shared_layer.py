@@ -166,26 +166,30 @@ class SharedLayerModel(nn.Module):
 class SharedLayerModelWithAttention(nn.Module):
     def __init__(self, input_shape, output_shape):
         super(SharedLayerModelWithAttention, self).__init__()
-
-        # CNN Layer before LSTM
-        self.conv_layers = nn.ModuleList([
+        
+        # Personalized CNN and GRU layers before the shared layers
+        self.pre_shared_personalized_cnn = nn.ModuleList([
             nn.Conv1d(in_channels=input_shape[-1], out_channels=64, kernel_size=4, stride=2, padding=1, dilation=2)
             for _ in range(output_shape[0])
+        ])
+        self.pre_shared_personalized_gru = nn.ModuleList([
+            nn.GRU(input_size=64, hidden_size=64, batch_first=True)
+            for _ in range(output_shape[0])
+        ])
+
+        # Task-specific attention layers after personalized layers
+        self.task_specific_attention = nn.ModuleList([
+            nn.Linear(64, 1) for _ in range(output_shape[0])
         ])
 
         # Shared LSTM layer
         self.shared_lstm = nn.GRU(input_size=64, hidden_size=128, batch_first=True)
 
-        # Personalized fully connected layers
+        # Personalized fully connected layers after the shared layer
         self.personalized_fc = nn.ModuleList([
             nn.Linear(128, 64) for _ in range(output_shape[0])
         ])
         self.dropout = nn.Dropout(0.2)
-
-        # Task-specific attention layers
-        self.task_specific_attention = nn.ModuleList([
-            nn.Linear(64, 1) for _ in range(output_shape[0])
-        ])
 
         # Output layer
         self.output_layer = nn.Linear(64 * output_shape[0], output_shape[0])
@@ -203,32 +207,39 @@ class SharedLayerModelWithAttention(nn.Module):
         return masked_x, mask
 
     def forward(self, x):
-        shared_outputs = []
+        shared_inputs = []
 
-        # Process each task's input through the CNN and LSTM
+        # Process each task's input through the personalized CNN+GRU with attention
         for i in range(len(x)):
             masked_input, mask = self.apply_mask(x[i])
 
-            # Convolutional layer
-            conv_out = self.conv_layers[i](masked_input.transpose(1, 2))
-            lstm_input = conv_out.transpose(1, 2)
+            # Personalized CNN layer
+            personal_cnn_out = self.pre_shared_personalized_cnn[i](masked_input.transpose(1, 2))  # (batch, channels, seq)
+            personal_cnn_out = personal_cnn_out.transpose(1, 2)  # Convert back to (batch, seq, features) for GRU
 
-            # Shared LSTM layer
-            lstm_out, _ = self.shared_lstm(lstm_input)
+            # Personalized GRU layer
+            personal_gru_out, _ = self.pre_shared_personalized_gru[i](personal_cnn_out)  # (batch, seq, features)
 
-            # Take the last hidden state of the LSTM
-            shared_outputs.append(lstm_out[:, -1, :])
+            # Task-specific attention applied to GRU outputs
+            attention_scores = F.softmax(self.task_specific_attention[i](personal_gru_out), dim=1)  # (batch, seq, 1)
+            context_vector = torch.sum(attention_scores * personal_gru_out, dim=1)  # (batch, features)
 
-        # Personalized dense layers with task-specific attention
+            # Add context vector as input to shared layers
+            shared_inputs.append(context_vector)
+
+        # Stack the context vectors for shared processing
+        shared_inputs = torch.stack(shared_inputs, dim=1)  # (batch, num_tasks, features)
+
+        # Shared LSTM layer
+        shared_lstm_out, _ = self.shared_lstm(shared_inputs)
+
+        # Personalized dense layers after shared layer
         personalized_outputs = []
-        for i, shared_out in enumerate(shared_outputs):
+        for i in range(shared_lstm_out.size(1)):  # Iterate over task outputs
+            shared_out = shared_lstm_out[:, i, :]
             personal_out = F.relu(self.personalized_fc[i](shared_out))
             personal_out = self.dropout(personal_out)
-
-            # Apply task-specific attention
-            attention_scores = F.softmax(self.task_specific_attention[i](personal_out), dim=1)  # Shape: (batch_size, 1)
-            personalized_context = attention_scores * personal_out  # Weighted features
-            personalized_outputs.append(personalized_context)
+            personalized_outputs.append(personal_out)
 
         # Concatenate task-specific outputs
         merged_personalized_output = torch.cat(personalized_outputs, dim=1)

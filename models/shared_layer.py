@@ -166,7 +166,7 @@ class SharedLayerModel(nn.Module):
 class SharedLayerModelWithAttention(nn.Module):
     def __init__(self, input_shape, output_shape):
         super(SharedLayerModelWithAttention, self).__init__()
-        
+
         # Personalized CNN and GRU layers before the shared layers
         self.pre_shared_personalized_cnn = nn.ModuleList([
             nn.Conv1d(in_channels=input_shape[-1], out_channels=64, kernel_size=4, stride=2, padding=1, dilation=2)
@@ -177,9 +177,10 @@ class SharedLayerModelWithAttention(nn.Module):
             for _ in range(output_shape[0])
         ])
 
-        # Task-specific attention layers after personalized layers
+        # Task-specific multi-head attention layers
         self.task_specific_attention = nn.ModuleList([
-            nn.Linear(64, 1) for _ in range(output_shape[0])
+            nn.MultiheadAttention(embed_dim=64, num_heads=4, batch_first=True)
+            for _ in range(output_shape[0])
         ])
 
         # Shared LSTM layer
@@ -209,7 +210,7 @@ class SharedLayerModelWithAttention(nn.Module):
     def forward(self, x):
         shared_inputs = []
 
-        # Process each task's input through the personalized CNN+GRU with attention
+        # Process each task's input through the personalized CNN+GRU with multi-head attention
         for i in range(len(x)):
             masked_input, mask = self.apply_mask(x[i])
 
@@ -220,9 +221,11 @@ class SharedLayerModelWithAttention(nn.Module):
             # Personalized GRU layer
             personal_gru_out, _ = self.pre_shared_personalized_gru[i](personal_cnn_out)  # (batch, seq, features)
 
-            # Task-specific attention applied to GRU outputs
-            attention_scores = F.softmax(self.task_specific_attention[i](personal_gru_out), dim=1)  # (batch, seq, 1)
-            context_vector = torch.sum(attention_scores * personal_gru_out, dim=1)  # (batch, features)
+            # Task-specific multi-head attention
+            attention_out, _ = self.task_specific_attention[i](personal_gru_out, personal_gru_out, personal_gru_out)  # (batch, seq, features)
+
+            # Take the mean over the sequence as the context vector
+            context_vector = attention_out.mean(dim=1)  # (batch, features)
 
             # Add context vector as input to shared layers
             shared_inputs.append(context_vector)

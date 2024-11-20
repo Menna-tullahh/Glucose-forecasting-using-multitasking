@@ -9,3 +9,4 @@ __pycache__/
 generalized_lstm_model
 personalized_lstm_model.png
 training.log
+saved_models/

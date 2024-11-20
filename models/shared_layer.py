@@ -162,14 +162,53 @@ class SharedLayerModel(nn.Module):
         output = self.output_layer(merged_personalized_output)
         # output = torch.sigmoid(output)
         return output
-    
+
+class TCNLayer(nn.Module):
+    def __init__(self, input_channels, output_channels, kernel_size, dilation, dropout=0.2):
+        super(TCNLayer, self).__init__()
+        self.conv = nn.Conv1d(
+            in_channels=input_channels,
+            out_channels=output_channels,
+            kernel_size=kernel_size,
+            dilation=dilation,
+            padding=(kernel_size - 1) * dilation,  # Ensures output length matches input length
+            padding_mode='zeros',
+        )
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(dropout)
+        self.residual_connection = (input_channels == output_channels)
+
+    def forward(self, x):
+        """
+        Forward pass for the TCN layer.
+        :param x: Input tensor of shape (batch_size, input_channels, sequence_length)
+        :return: Output tensor of shape (batch_size, output_channels, sequence_length)
+        """
+        # Apply convolution
+        out = self.conv(x)
+        out = out[:, :, :-self.conv.padding[0]]  # Remove extra padding to ensure causality
+        out = self.relu(out)
+        out = self.dropout(out)
+
+        # Add residual connection if input and output channels match
+        if self.residual_connection:
+            out = out + x
+
+        return out
+  
 class SharedLayerModelWithAttention(nn.Module):
-    def __init__(self, input_shape, output_shape):
+    def __init__(self, input_shape, output_shape, num_heads=4, kernel_size=3, dropout=0.2):
         super(SharedLayerModelWithAttention, self).__init__()
 
-        # Personalized CNN and GRU layers before the shared layers
-        self.pre_shared_personalized_cnn = nn.ModuleList([
-            nn.Conv1d(in_channels=input_shape[-1], out_channels=64, kernel_size=4, stride=2, padding=1, dilation=2)
+       # Personalized TCN and GRU layers before the shared layers
+        self.pre_shared_personalized_tcn = nn.ModuleList([
+            TCNLayer(
+                input_channels=input_shape[-1],
+                output_channels=64,
+                kernel_size=kernel_size,
+                dilation=2,
+                dropout=dropout,
+            )
             for _ in range(output_shape[0])
         ])
         self.pre_shared_personalized_gru = nn.ModuleList([
@@ -179,18 +218,24 @@ class SharedLayerModelWithAttention(nn.Module):
 
         # Task-specific multi-head attention layers
         self.task_specific_attention = nn.ModuleList([
-            nn.MultiheadAttention(embed_dim=64, num_heads=4, batch_first=True)
+            nn.MultiheadAttention(embed_dim=64, num_heads=num_heads, batch_first=True)
             for _ in range(output_shape[0])
         ])
 
         # Shared LSTM layer
         self.shared_lstm = nn.GRU(input_size=64, hidden_size=128, batch_first=True)
 
+        # Residual transformation for the shared LSTM input
+        self.shared_residual_transform = nn.Linear(64, 128)
+
         # Personalized fully connected layers after the shared layer
         self.personalized_fc = nn.ModuleList([
             nn.Linear(128, 64) for _ in range(output_shape[0])
         ])
-        self.dropout = nn.Dropout(0.2)
+        self.residual_transform = nn.ModuleList([
+            nn.Linear(128, 64) for _ in range(output_shape[0])
+        ])
+        self.dropout = nn.Dropout(dropout)
 
         # Output layer
         self.output_layer = nn.Linear(64 * output_shape[0], output_shape[0])
@@ -210,16 +255,16 @@ class SharedLayerModelWithAttention(nn.Module):
     def forward(self, x):
         shared_inputs = []
 
-        # Process each task's input through the personalized CNN+GRU with multi-head attention
+        # Process each task's input through the personalized TCN+GRU with multi-head attention
         for i in range(len(x)):
             masked_input, mask = self.apply_mask(x[i])
 
-            # Personalized CNN layer
-            personal_cnn_out = self.pre_shared_personalized_cnn[i](masked_input.transpose(1, 2))  # (batch, channels, seq)
-            personal_cnn_out = personal_cnn_out.transpose(1, 2)  # Convert back to (batch, seq, features) for GRU
+            # Personalized TCN layer
+            personal_tcn_out = self.pre_shared_personalized_tcn[i](masked_input.transpose(1, 2))  # (batch, channels, seq)
+            personal_tcn_out = personal_tcn_out.transpose(1, 2)  # Convert back to (batch, seq, features)
 
-            # Personalized GRU layer
-            personal_gru_out, _ = self.pre_shared_personalized_gru[i](personal_cnn_out)  # (batch, seq, features)
+            # Personalized GRU layer with residual connection
+            personal_gru_out, _ = self.pre_shared_personalized_gru[i](personal_tcn_out)  # (batch, seq, features)
 
             # Task-specific multi-head attention
             attention_out, _ = self.task_specific_attention[i](personal_gru_out, personal_gru_out, personal_gru_out)  # (batch, seq, features)
@@ -233,15 +278,29 @@ class SharedLayerModelWithAttention(nn.Module):
         # Stack the context vectors for shared processing
         shared_inputs = torch.stack(shared_inputs, dim=1)  # (batch, num_tasks, features)
 
-        # Shared LSTM layer
+        # Shared LSTM layer with residual connection
         shared_lstm_out, _ = self.shared_lstm(shared_inputs)
+
+        # Transform the input for residual addition
+        shared_residual = self.shared_residual_transform(shared_inputs)
+
+        # Add residual connection for the shared LSTM
+        shared_lstm_out = shared_lstm_out + shared_residual
 
         # Personalized dense layers after shared layer
         personalized_outputs = []
         for i in range(shared_lstm_out.size(1)):  # Iterate over task outputs
             shared_out = shared_lstm_out[:, i, :]
+
+            # Transform the shared LSTM output to match the dense layer output
+            residual_input = self.residual_transform[i](shared_out)
+
+            # Pass through the dense layer
             personal_out = F.relu(self.personalized_fc[i](shared_out))
             personal_out = self.dropout(personal_out)
+
+            # Add residual connection
+            personal_out = personal_out + residual_input
             personalized_outputs.append(personal_out)
 
         # Concatenate task-specific outputs

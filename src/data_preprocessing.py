@@ -3,6 +3,8 @@ import os
 import logging
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 import shutil
+import numpy as np
+from sklearn.impute import KNNImputer
 
 # Configure logging to save logs to a file and stream to console
 logging.basicConfig(
@@ -73,15 +75,97 @@ def normalize_data(df):
     Returns:
     pd.DataFrame: Normalized DataFrame.
     """
+    # Apply log scaling
+    df = df.map(np.log)
+
     scaler = StandardScaler()
     # scaler = MinMaxScaler(feature_range=(-1, 1))
     df[df.columns] = scaler.fit_transform(df)  # Normalize all columns
     # print('Min value:',df['value'].min())
     return df, scaler
 
-def fill_na(df):
+# def fill_na(df):
+#     """
+#     Fills missing values in the DataFrame with 0.
+
+#     Parameters:
+#     df (pd.DataFrame): The DataFrame with potential missing values.
+
+#     Returns:
+#     pd.DataFrame: DataFrame with missing values filled.
+#     """
+#     df.fillna(0, inplace=True)
+#     return df
+
+def imputation(df):
+    df = df.interpolate(method='linear')
+    return df
+
+# def fill_na_with_knn(df, column, n_neighbors=2, test = False):
+#     """
+#     Fills missing values in the specified column of the DataFrame using KNN
+#     if the gap is less than 3 readings; otherwise, fills with 0.
+
+#     Parameters:
+#     df (pd.DataFrame): The DataFrame with potential missing values.
+#     column (str): The column name in the DataFrame to apply the method.
+#     n_neighbors (int): Number of neighbors to consider for KNN.
+
+#     Returns:
+#     pd.DataFrame: DataFrame with missing values filled as per the specified method.
+#     """
+#     # Work on a copy of the DataFrame
+#     df_copy = df.copy()
+#     if test:
+#         df_copy.fillna(0, inplace=True)
+#         return df_copy
+#     # Identify gaps and their sizes
+#     is_missing = df_copy[column].isna()
+#     missing_groups = (is_missing != is_missing.shift()).cumsum()
+    
+#     for group, size in is_missing.groupby(missing_groups).sum().items():
+#         if size < 3 and size > 0:  # Apply KNN if gap is less than 3
+#             mask = missing_groups == group
+#             observed_data = df_copy[[column]].copy()
+            
+#             # Use KNNImputer to fill the small gaps
+#             imputer = KNNImputer(n_neighbors=n_neighbors)
+#             observed_data_filled = imputer.fit_transform(observed_data)
+#             df_copy.loc[mask, column] = observed_data_filled[mask]
+#         elif size >= 3:  # Fill with 0 if gap is 3 or more
+#             df_copy.loc[missing_groups == group, column] = 0
+    
+
+#     return df_copy
+
+def interpolate_small_gaps(df, column, max_gap=12):
     """
-    Fills missing values in the DataFrame with -1.
+    Interpolates gaps in the specified column of the DataFrame
+    if the number of consecutive NaNs is less than or equal to max_gap.
+    
+    Parameters:
+    df (pd.DataFrame): The input DataFrame.
+    column (str): The column name to process.
+    max_gap (int): Maximum number of consecutive NaNs to interpolate.
+    
+    Returns:
+    pd.DataFrame: DataFrame with small gaps interpolated.
+    """
+    data = df[column]
+    is_nan = data.isna()
+    
+    # Identify gaps smaller than or equal to max_gap
+    gap_sizes = is_nan.groupby((~is_nan).cumsum()).cumsum()
+    to_interpolate = (is_nan & (gap_sizes <= max_gap))
+    
+    # Interpolate only the small gaps
+    data[to_interpolate] = data.interpolate(method='linear', limit_direction='forward', limit=max_gap).loc[to_interpolate]
+    data.fillna(0, inplace=True)
+    return df
+
+def fill_na(df, test):
+    """
+    Fills missing values in the DataFrame with 0.
 
     Parameters:
     df (pd.DataFrame): The DataFrame with potential missing values.
@@ -89,16 +173,13 @@ def fill_na(df):
     Returns:
     pd.DataFrame: DataFrame with missing values filled.
     """
-    df.fillna(0, inplace=True)
+    if test:
+        df.fillna(0, inplace=True)
+    else:
+        df = interpolate_small_gaps(df, 'value')
     return df
 
-def imputation(df):
-    df = df.interpolate(method='linear')
-    return df
-
-
-
-def preprocessing_df(df, timestamp_col, freq, agg_func):
+def preprocessing_df(df, timestamp_col, freq, agg_func, test):
     """
     Applies a series of preprocessing steps: converts timestamp to datetime, resamples the data, normalizes values, and fills missing values.
 
@@ -114,9 +195,11 @@ def preprocessing_df(df, timestamp_col, freq, agg_func):
     df = timestamp_type(df, timestamp_col)
     df = resample_data(df, freq, agg_func)
     df, scaler= normalize_data(df)
-    df = fill_na(df)
+    df = fill_na(df, test)
     # df = imputation(df)
     return df, scaler
+
+
 
     
 def preprocessing_df_old(df, timestamp_col, freq, agg_func, test):
@@ -192,8 +275,12 @@ def process_all_csv_files(input_folder, output_folder, timestamp_col='ts', freq=
 
                     # Apply preprocessing
                     try:
-                        processed_df, scaler= preprocessing_df(df, timestamp_col=timestamp_col, freq=freq, agg_func=agg_func)
-                        
+                        if top[-4] == "test":
+                            print("Test")
+                            processed_df, scaler= preprocessing_df(df, timestamp_col=timestamp_col, freq=freq, agg_func=agg_func, test = True)
+                        else:
+                            processed_df, scaler= preprocessing_df(df, timestamp_col=timestamp_col, freq=freq, agg_func=agg_func, test = False)
+
                         # Save the processed DataFrame
                         output_file_path = os.path.join(full_save_folder_path, file)
                         processed_df.to_csv(output_file_path, index=True)  # Ensure index is saved

@@ -83,7 +83,7 @@ def pad_sequences(sequences, max_len, pad_value=0.0):
     return np.array(padded_sequences)
 
 
-def aggregate_patients(input_folder, target_col, window_size = 5, prediction_horizon = 1, test = True):
+def aggregate_patients(input_folder, target_col, window_size = 5, prediction_horizon = 1, test = True, patient_no = 12):
     """
     Aggregates time series data from multiple CSV files in a folder into feature matrix X and target vector y.
     All patients' data will be padded to the same length (with -1) based on the longest time series.
@@ -104,7 +104,7 @@ def aggregate_patients(input_folder, target_col, window_size = 5, prediction_hor
     if not os.path.exists(input_folder):
         logging.error(f"The folder {input_folder} does not exist.")
         raise FileNotFoundError(f"The folder {input_folder} does not exist.")
-
+    counter = 0
     # Traverse through all folders and files in the input directory
     for top, _, files in os.walk(input_folder):
         if test == False:
@@ -124,6 +124,9 @@ def aggregate_patients(input_folder, target_col, window_size = 5, prediction_hor
                 logging.info(f"Processing file: {file_path}")
                 
                 try:
+                    if counter == patient_no: 
+                        break
+                    counter+=1
                     df = pd.read_csv(file_path)
                     
                     # Prepare time series data for this file
@@ -173,7 +176,7 @@ def sequential_split(dataset, train_ratio=0.8):
     return train_dataset, val_dataset
 
 
-def prepare_data_loader(window_size,BATCH_SIZE, prediction_horizon, model_type, split_ratio = 0.8, df=None, df_test=None, output_folder_train = None, shuffle = True):
+def prepare_data_loader(window_size,BATCH_SIZE, prediction_horizon, model_type, split_ratio = 0.8, df=None, df_test=None, output_folder_train = None, shuffle = True, patient_no = 12):
 
     if model_type == 'personalized':
 
@@ -195,20 +198,20 @@ def prepare_data_loader(window_size,BATCH_SIZE, prediction_horizon, model_type, 
 
 
     else:
-        X, y = aggregate_patients(output_folder_train, 'value', window_size, prediction_horizon, test = False)
+        X, y = aggregate_patients(output_folder_train, 'value', window_size, prediction_horizon, test = False, patient_no = patient_no)
         print("Shape of X (features):", X.shape)
         print("Shape of y (targets):", y.shape)
 
-        X_test, y_test = aggregate_patients(output_folder_train, 'value', window_size, prediction_horizon, test = True)
+        X_test, y_test = aggregate_patients(output_folder_train, 'value', window_size, prediction_horizon, test = True, patient_no = patient_no)
         print("Shape of X_test (features):", X_test.shape)
         print("Shape of y_test (targets):", y_test.shape)
         if model_type == 'shared-layer':
             input_shape = (window_size, X.shape[1], 1)
             input_shape_test = (window_size, X_test.shape[1], 1)
         elif model_type == 'generalized':
-            input_shape = (window_size, X.shape[1], 12)
-            input_shape_test = (window_size, X_test.shape[1], 12)
-        output_shape, output_shape_test = (12,), (12,)
+            input_shape = (window_size, X.shape[1], patient_no)
+            input_shape_test = (window_size, X_test.shape[1], patient_no)
+        output_shape, output_shape_test = (patient_no,), (patient_no,)
 
 
 

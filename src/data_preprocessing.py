@@ -349,7 +349,12 @@ def process_all_csv_files_personalized(input_folder, output_folder, timestamp_co
 
                     # Apply preprocessing
                     try:
-                        processed_df, scaler= preprocessing_df(df, timestamp_col=timestamp_col, freq=freq, agg_func=agg_func)
+                        if top[-4] == "test":
+                            print("Test")
+                            processed_df, scaler= preprocessing_df(df, timestamp_col=timestamp_col, freq=freq, agg_func=agg_func, test = True)
+                        else:
+                            processed_df, scaler= preprocessing_df(df, timestamp_col=timestamp_col, freq=freq, agg_func=agg_func, test = False)
+
                         if sub_path.split("\\")[1] == "train":
                             train_patients[patient_code] =  processed_df
                         else:

@@ -741,7 +741,7 @@ def validate_model(model, val_loader, criterion_mae, criterion_mse, device, mode
                 inputs = [inp for inp in inputs]
                 inputs = torch.tensor(np.array(inputs)).to(device)
                 targets = targets.to(device)
-            
+           
                 # Forward pass
                 outputs = model(inputs)
             if model_type == 'personalized':

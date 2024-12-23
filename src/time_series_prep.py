@@ -183,15 +183,15 @@ def prepare_data_loader(window_size,BATCH_SIZE, prediction_horizon, model_type, 
         X, y = prepare_time_series_data(df, 'value', window_size, prediction_horizon)
         X = X.reshape(1,X.shape[0], X.shape[1])
         y = y.reshape(1,y.shape[0])
-        print("Shape of X (features):", X.shape)
-        print("Shape of y (targets):", y.shape)
+        # print("Shape of X (features):", X.shape)
+        # print("Shape of y (targets):", y.shape)
 
         X_test, y_test = prepare_time_series_data(df_test, 'value', window_size, prediction_horizon)
         X_test = X_test.reshape(1,X_test.shape[0], X_test.shape[1])
         # print(y.shape)
         y_test = y_test.reshape(1,y_test.shape[0])
-        print("Shape of X_test (features):", X_test.shape)
-        print("Shape of y_test (targets):", y_test.shape)
+        # print("Shape of X_test (features):", X_test.shape)
+        # print("Shape of y_test (targets):", y_test.shape)
         input_shape = (window_size, X.shape[1], 1)
         input_shape_test = (window_size, X_test.shape[1], 1)
         output_shape, output_shape_test = (1,), (1,)
@@ -199,12 +199,12 @@ def prepare_data_loader(window_size,BATCH_SIZE, prediction_horizon, model_type, 
 
     else:
         X, y = aggregate_patients(output_folder_train, 'value', window_size, prediction_horizon, test = False, patient_no = patient_no)
-        print("Shape of X (features):", X.shape)
-        print("Shape of y (targets):", y.shape)
+        # print("Shape of X (features):", X.shape)
+        # print("Shape of y (targets):", y.shape)
 
         X_test, y_test = aggregate_patients(output_folder_train, 'value', window_size, prediction_horizon, test = True, patient_no = patient_no)
-        print("Shape of X_test (features):", X_test.shape)
-        print("Shape of y_test (targets):", y_test.shape)
+        # print("Shape of X_test (features):", X_test.shape)
+        # print("Shape of y_test (targets):", y_test.shape)
         if model_type == 'shared-layer':
             input_shape = (window_size, X.shape[1], 1)
             input_shape_test = (window_size, X_test.shape[1], 1)

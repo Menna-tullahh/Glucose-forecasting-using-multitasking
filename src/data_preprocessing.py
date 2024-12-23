@@ -276,7 +276,7 @@ def process_all_csv_files(input_folder, output_folder, timestamp_col='ts', freq=
                     # Apply preprocessing
                     try:
                         if top[-4] == "test":
-                            print("Test")
+                            # print("Test")
                             processed_df, scaler= preprocessing_df(df, timestamp_col=timestamp_col, freq=freq, agg_func=agg_func, test = True)
                         else:
                             processed_df, scaler= preprocessing_df(df, timestamp_col=timestamp_col, freq=freq, agg_func=agg_func, test = False)
@@ -350,7 +350,7 @@ def process_all_csv_files_personalized(input_folder, output_folder, timestamp_co
                     # Apply preprocessing
                     try:
                         if top[-4] == "test":
-                            print("Test")
+                            # print("Test")
                             processed_df, scaler= preprocessing_df(df, timestamp_col=timestamp_col, freq=freq, agg_func=agg_func, test = True)
                         else:
                             processed_df, scaler= preprocessing_df(df, timestamp_col=timestamp_col, freq=freq, agg_func=agg_func, test = False)

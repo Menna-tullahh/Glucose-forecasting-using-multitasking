@@ -43,7 +43,7 @@ This project introduces **MTC-GA** (Multitasking Temporal Convolutional Network 
 
 ### Key Components
 
-- **`models`**\*\* Folder\*\*:
+- **`models Folder`**:
 
   - **`generalized_model.py`**: Implements the `GeneralizedModelWithAttention`, a TCN-GRU-Attention based forecasting model.
   - **`personalized_model.py`**: Implements the `PersonalizedModelWithAttention`, designed for individual forecasting tasks with similar architecture to the generalized model.
@@ -51,7 +51,7 @@ This project introduces **MTC-GA** (Multitasking Temporal Convolutional Network 
   - **`temporal_block.py`**: Contains the implementation of `TemporalBlock`, a foundational component for Temporal Convolutional Networks (TCN).
   - **`helper_functions.py`**: Includes utilities for training, validating, and evaluating models.
 
-- **`src`**\*\* Folder\*\*:
+- **`src Folder`** :
 
   - **`data_preprocessing.py`**: Provides utilities for preprocessing raw glucose data.
   - **`dataset_class.py`**: Implements the `TimeSeriesDataset` class for managing time series data.
